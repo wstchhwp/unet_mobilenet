@@ -22,11 +22,11 @@ from unet.unet_mbv2 import MobileNetV2,Unet_MobileNetV2
 from unet.syx_Unet_Mnet import Unet_Mnet_model
 
 # 训练数据集的原图像路径
-dir_img = Path('./data_zhanting/imgs/')
+dir_img = Path('./data_jiqiren/imgs/')
 # 训练数据集的ｍａｓｋ图像路径
-dir_mask = Path('./data_zhanting/masks/')
+dir_mask = Path('./data_jiqiren/masks/')
 # 保存模型的路径
-dir_checkpoint = Path('./data_zhanting_checkpoints/')
+dir_checkpoint = Path('./data_jiqiren_ck/Unet_MobileNetV2')
 
 
 def train_net(net,
@@ -75,8 +75,14 @@ def train_net(net,
 
     # 4. Set up the optimizer, the loss, the learning rate scheduler and the loss scaling for AMP
     # 设置优化器　loss 学习率
-    optimizer = optim.RMSprop(net.parameters(), lr=learning_rate, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=2)  # goal: maximize Dice score
+    optimizer = optim.RMSprop(net.parameters(), lr=learning_rate, weight_decay=1e-8, momentum=0.99)
+    # 在发现loss不再降低或者acc不再提高之后，降低学习率。各参数意义如下：
+    """
+    'min’模式检测metric是否不再减小，'max’模式检测metric是否不再增大；
+    patience	不再减小（或增大）的累计次数；
+    factor：缩放学习率的值，学习率将以lr = lr*factor的形式被减少
+    """
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=3,factor=0.9)  # goal: maximize Dice score
     grad_scaler = torch.cuda.amp.GradScaler(enabled=amp)
     # 交叉上损失函数
     criterion = nn.CrossEntropyLoss()
@@ -123,9 +129,10 @@ def train_net(net,
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 # Evaluation round
-                division_step = (n_train // (10 * batch_size))
+                division_step = (n_train // (3 * batch_size))
                 if division_step > 0:
-                    if global_step % division_step == 0:
+                    # if global_step % division_step == 0:
+                    if global_step % 400 == 0:
                         histograms = {}
                         for tag, value in net.named_parameters():
                             tag = tag.replace('/', '.')
@@ -133,7 +140,8 @@ def train_net(net,
                             histograms['Gradients/' + tag] = wandb.Histogram(value.grad.data.cpu())
 
                         val_score = evaluate(net, val_loader, device)
-                        scheduler.step(val_score)
+                        if epoch %5==0:
+                            scheduler.step(val_score)
 
                         logging.info('Validation Dice score: {}'.format(val_score))
                         experiment.log({
@@ -142,7 +150,8 @@ def train_net(net,
                             'images': wandb.Image(images[0].cpu()),
                             'masks': {
                                 'true': wandb.Image(true_masks[0].float().cpu()),
-                                'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                                # 'pred': wandb.Image(masks_pred.argmax(dim=1)[0].float().cpu()),
+                                'pred': wandb.Image(torch.softmax(masks_pred, dim=1).argmax(dim=1)[0].float().cpu()),
                             },
                             'step': global_step,
                             'epoch': epoch,
@@ -159,12 +168,12 @@ def train_net(net,
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks')
     parser.add_argument('--epochs', '-e', metavar='E', type=int, default=1000, help='Number of epochs')
-    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=4, help='Batch size')
-    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=2e-5,
+    parser.add_argument('--batch-size', '-b', dest='batch_size', metavar='B', type=int, default=6, help='Batch size')
+    parser.add_argument('--learning-rate', '-l', metavar='LR', type=float, default=1e-5,
                         help='Learning rate', dest='lr')
     parser.add_argument('--load', '-f', type=str, default=False, help='Load model from a .pth file')
     parser.add_argument('--scale', '-s', type=float, default=1, help='Downscaling factor of the images')
-    parser.add_argument('--validation', '-v', dest='val', type=float, default=10.0,
+    parser.add_argument('--validation', '-v', dest='val', type=float, default=5.0,
                         help='Percent of the data that is used as validation (0-100)')
     parser.add_argument('--amp', action='store_true', default=True, help='Use mixed precision')
     parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
@@ -181,10 +190,6 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
-    # Change here to adapt to your data
-    # n_channels=3 for RGB images
-    # n_classes is the number of probabilities you want to get per pixel
-
     #todo 原　UNET 网络
     # net = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
     # todo 自写　UNET 网络
@@ -195,7 +200,8 @@ if __name__ == '__main__':
     net = Unet_MobileNetV2(num_classes=4)
 
     if args.load:
-        net.load_state_dict(torch.load(args.load, map_location=device))
+        # net.load_state_dict(torch.load(args.load, map_location=device))
+        net.load_state_dict(torch.load("/home/ly_jdw/Documents/0428_Unet/SELF_UNet/data_jiqiren_ck/Unet_MobileNetV2/checkpoint_epoch8.pth", map_location=device))
         logging.info(f'Model loaded from {args.load}')
 
     net.to(device=device)
